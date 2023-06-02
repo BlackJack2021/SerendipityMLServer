@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "serendipity-machine-learning-system"
+version = "0.1.0"
+description = "machine learning system for serendipity"
+authors = ["blackjack <kurawata414@gmail.com>"]
+readme = "README.md"
+packages = [{include = "serendipity_machine_learning_system"}]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+uvicorn = "^0.22.0"
+mangum = "^0.17.0"
+sqlalchemy = "^2.0.15"
+aiomysql = "^0.1.1"
+fastapi = "^0.95.2"
+numpy = "^1.24.3"
+pandas = "^2.0.2"
+implicit = "^0.6.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,25 @@
+service: ml
+
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: python3.8
+  region: ap-northeast-1
+  memorySize: 1024
+  ecr:
+    images:
+      serendipity-machine-learning-server:
+        path: ./
+  httpApi:
+    cors: true
+
+functions:
+  mangum:
+    image:
+      name: serendipity-machine-learning-server
+    events:
+      - httpApi:
+          path: /{proxy+}
+          method: ANY
+    timeout: 30
