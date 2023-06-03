@@ -13,9 +13,12 @@ mangum = "^0.17.0"
 sqlalchemy = "^2.0.15"
 aiomysql = "^0.1.1"
 fastapi = "^0.95.2"
+implicit = "^0.6.2"
+pymysql = "^1.0.3"
 numpy = "^1.24.3"
 pandas = "^2.0.2"
-implicit = "^0.6.2"
+pandera = "0.14"
+multimethod = "^1.9.1"
 
 
 [build-system]
