@@ -20,6 +20,7 @@ class Trainer:
         factors: int = 30,
         n_epochs: int = 50,
         k: int = 10,
+        end_date: datetime = datetime(2023, 5, 31),
     ):
         """
         モデルの学習に用いるクラスを提供
@@ -37,6 +38,8 @@ class Trainer:
                 学習におけるパラメータの更新回数
             k: int = 10
                 Precision@K や Recall@K における K
+            end_date: datetime = datetime(2023, 5, 31)
+                利用するデータの最終日情報
         """
         self.minimum_num_per_user = minimum_num_per_user
         self.valid_ratio = valid_ratio
@@ -44,6 +47,7 @@ class Trainer:
         self.factors = factors
         self.n_epochs = n_epochs
         self.k = k
+        self.end_date = end_date
         self.model: Optional[implicit.als.AlternatingLeastSquares] = None
 
     @staticmethod
@@ -51,8 +55,8 @@ class Trainer:
         raw_df: pd.DataFrame,
         minimum_num_per_user: int,
         valid_ratio: float,
-        end_date: Optional[datetime] = datetime(2023, 5, 31),
-    ) -> Dataset:
+        end_date: datetime,
+    ):
         """前処理パート
 
         生データを引数とし、以下を実行する
@@ -150,6 +154,7 @@ class Trainer:
             true_user2items=valid_user2items, pred_user2items=pred_user2items, k=k
         )
         print(metrics)
+        return metrics
 
     def execute(self, raw_df: pd.DataFrame):
         """raw_df を入力とし、学習から評価まで実施"""
@@ -158,14 +163,16 @@ class Trainer:
             raw_df=df,
             minimum_num_per_user=self.minimum_num_per_user,
             valid_ratio=self.valid_ratio,
+            end_date=self.end_date,
         )
         matrix_info = self.get_matrix_info(train_df=dataset.train_df, alpha=self.alpha)
         self.fit(
             matrix=matrix_info.matrix, factors=self.factors, n_epochs=self.n_epochs
         )
         recommend_result = self.predict(matrix_info=matrix_info, k=self.k)
-        self.evaluate(
+        metrics = self.evaluate(
             valid_user2items=dataset.valid_user2items,
             pred_user2items=recommend_result.pred_user2items,
             k=self.k,
         )
+        return metrics
