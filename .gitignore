@@ -327,4 +327,8 @@ cython_debug/
 secret.py
 api_documents.py
 db_config.py
+# モデルなど
 *.pkl
+# mlflow 周りの設定
+src/recommend/ml/mlflow/config.py
+mlruns.db
