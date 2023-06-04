@@ -4,6 +4,7 @@ import implicit
 from scipy.sparse import lil_matrix
 from collections import defaultdict
 import pickle
+from datetime import datetime
 
 from src.recommend.ml.imf.schemas import raw_data_for_train_schema
 from src.recommend.ml.utils.dataclass import Dataset, MatrixInfo, RecommendResult
@@ -47,7 +48,10 @@ class Trainer:
 
     @staticmethod
     def preprocess(
-        raw_df: pd.DataFrame, minimum_num_per_user: int, valid_ratio: float
+        raw_df: pd.DataFrame,
+        minimum_num_per_user: int,
+        valid_ratio: float,
+        end_date: Optional[datetime] = datetime(2023, 5, 31),
     ) -> Dataset:
         """前処理パート
 
@@ -55,11 +59,16 @@ class Trainer:
         1. 学習データと検証データに分割する
         2. 学習データと検証データのそれぞれで、閲覧企業のリストの辞書を作成する
         """
+        # end_date が指定されている場合、その日付より前のデータのみを解析対象とする
+        if end_date is not None:
+            df = raw_df[raw_df["datetime"] <= end_date]
+        else:
+            df = raw_df.copy()
         # 学習データに minimum 個以上閲覧履歴が存在するユーザーを対象とする
         # 各学習データを時間順に並び替えて、新しいものから valid_ratio を検証データとする。
         trains: List[pd.DataFrame] = []
         valids: List[pd.DataFrame] = []
-        for _, user_df in raw_df.groupby("user_id"):
+        for _, user_df in df.groupby("user_id"):
             if len(user_df) > minimum_num_per_user:
                 continue
             valid_num = int(len(user_df) * valid_ratio)
