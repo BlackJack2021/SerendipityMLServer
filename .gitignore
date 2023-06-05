@@ -329,6 +329,8 @@ api_documents.py
 db_config.py
 # モデルなど
 *.pkl
-# mlflow 周りの設定
+*.npz
+# mlflow 用の実験パラメータ
 src/recommend/ml/mlflow/config.py
+# mlflow の実験結果ログ
 mlruns.db
