@@ -3,8 +3,8 @@ from typing import List, Optional, Dict
 import implicit
 from scipy.sparse import lil_matrix
 from collections import defaultdict
-import pickle
 from datetime import datetime
+import pickle
 
 from src.recommend.ml.imf.schemas import raw_data_for_train_schema
 from src.recommend.ml.utils.dataclass import Dataset, MatrixInfo, RecommendResult
@@ -14,11 +14,13 @@ from src.recommend.ml.utils.metric_calcurator import MetricCalculator
 class Trainer:
     def __init__(
         self,
-        minimum_num_per_user: int = 3,
-        valid_ratio: float = 1 / 3,
+        minimum_num_per_user: Optional[int] = 3,
+        valid_ratio: Optional[float] = 1 / 3,
         alpha: float = 1.0,
         factors: int = 30,
         n_epochs: int = 50,
+        random_state: int = 1,
+        regularization: float = 0.1,
         k: int = 10,
         end_date: datetime = datetime(2023, 5, 31),
     ):
@@ -26,18 +28,24 @@ class Trainer:
         モデルの学習に用いるクラスを提供
 
         Argument:
-            minimum_num_per_user: int = 3
+            minimum_num_per_user: Optional[int] = 3
                 1ユーザー当たり最低何本の企業閲覧が存在することを前提とするか
-            valid_ratio: float = 1/3
+                プロダクション用のモデルを構築する際にはここを None にする
+            valid_ratio: Optional[float] = 1/3
                 検証データの比率
+                プロダクション用のモデルを構築する際にはここを None にする
             alpha: float = 1.0
                 信頼度を算出するのに用いる比例定数. 詳しくは description.md を参照すること
             factors: int = 10
                 行列因子分解に用いる因子数
             n_epochs: int = 50
                 学習におけるパラメータの更新回数
+            random_state: int = 1
+                implicit.alt.AlternatingLeastSquare の乱数シードの設定
             k: int = 10
                 Precision@K や Recall@K における K
+            regularization: float = 0.1
+                正則化項の重みパラメータ
             end_date: datetime = datetime(2023, 5, 31)
                 利用するデータの最終日情報
         """
@@ -46,7 +54,9 @@ class Trainer:
         self.alpha = alpha
         self.factors = factors
         self.n_epochs = n_epochs
+        self.random_state = random_state
         self.k = k
+        self.regularization = regularization
         self.end_date = end_date
         self.model: Optional[implicit.als.AlternatingLeastSquares] = None
 
@@ -97,7 +107,10 @@ class Trainer:
         )
 
     @staticmethod
-    def get_matrix_info(train_df: pd.DataFrame, alpha: float):
+    def get_matrix_info(
+        train_df: pd.DataFrame,
+        alpha: float,
+    ):
         """学習データを user × company の行列形式で持つ際の諸情報を取得"""
         unique_user_ids = sorted(train_df["user_id"].unique())
         unique_item_ids = sorted(train_df["edinet_code"].unique())
@@ -114,18 +127,23 @@ class Trainer:
             user_id2index=user_id2index, item_id2index=item_id2index, matrix=matrix
         )
 
-    def fit(self, matrix: lil_matrix, factors: int, n_epochs: int):
-        """モデルの学習を行う"""
+    def fit(
+        self,
+        matrix: lil_matrix,
+        factors: int,
+        n_epochs: int,
+        random_state: int,
+        regularization: float,
+    ):
+        """モデルの学習を実施"""
         self.model = implicit.als.AlternatingLeastSquares(
             factors=factors,
             iterations=n_epochs,
             calculate_training_loss=True,
-            random_state=1,
+            random_state=random_state,
+            regularization=regularization,
         )
         self.model.fit(matrix.T.tocsr())
-        # モデルを保存する
-        with open("./src/recommend/ml/imf/model/imf_model.pkl", "wb") as f:
-            pickle.dump(self.model, f)
 
     def predict(self, matrix_info: MatrixInfo, k: int) -> RecommendResult:
         """学習したモデルに基づいて k 個商品をレコメンドする"""
@@ -156,7 +174,7 @@ class Trainer:
         print(metrics)
         return metrics
 
-    def execute(self, raw_df: pd.DataFrame):
+    def execute_experiment(self, raw_df: pd.DataFrame):
         """raw_df を入力とし、学習から評価まで実施"""
         df = raw_data_for_train_schema.validate(raw_df)
         dataset = self.preprocess(
@@ -167,7 +185,11 @@ class Trainer:
         )
         matrix_info = self.get_matrix_info(train_df=dataset.train_df, alpha=self.alpha)
         self.fit(
-            matrix=matrix_info.matrix, factors=self.factors, n_epochs=self.n_epochs
+            matrix=matrix_info.matrix,
+            factors=self.factors,
+            n_epochs=self.n_epochs,
+            random_state=self.random_state,
+            regularization=self.regularization,
         )
         recommend_result = self.predict(matrix_info=matrix_info, k=self.k)
         metrics = self.evaluate(
@@ -176,3 +198,26 @@ class Trainer:
             k=self.k,
         )
         return metrics
+
+    def train_and_save_model_for_production(
+        self,
+        raw_df: pd.DataFrame,
+        matrix_info_path: str = "./src/recommend/ml/imf/production_model/matrix_info.pkl",
+        model_path: str = "./src/recommend/ml/imf/production_model/imf_model",
+    ):
+        """プロダクション用のモデルの学習及び保存を実施"""
+        df = raw_data_for_train_schema.validate(raw_df)
+        matrix_info = self.get_matrix_info(train_df=df, alpha=self.alpha)
+        self.fit(
+            matrix=matrix_info.matrix,
+            factors=self.factors,
+            n_epochs=self.n_epochs,
+            random_state=self.random_state,
+            regularization=self.regularization,
+        )
+        # matrix_info と model の保存を実施
+        with open(matrix_info_path, "wb") as f:
+            pickle.dump(matrix_info, f)
+        self.model.save(model_path)
+
+        print("モデルの学習・保存が完了しました。")
