@@ -11,14 +11,14 @@ def predict_for_user(
     n_epochs: int,
     k: int,
     matrix_info_path: str = "./src/recommend/ml/imf/production_model/matrix_info.pkl",
-    model_path: str = "./src/recommend/ml/imf/production_model/imf_model.pkz",
+    model_path: str = "./src/recommend/ml/imf/production_model/imf_model.npz",
 ) -> List[str]:
     # 行列情報のロード
     with open(matrix_info_path, "rb") as f:
         matrix_info: MatrixInfo = pickle.load(f)
 
     # 学習データにユーザーがいるかどうかを確認し、存在していない場合は何も返さない
-    if user_id not in matrix_info.user_id2index():
+    if user_id not in matrix_info.user_id2index:
         return []
 
     # モデルのロードを行う
@@ -29,7 +29,11 @@ def predict_for_user(
         random_state=1,
     ).load(model_path)
     # レコメンドするアイテムのリストを返す
-    recommend_item_indexes = model.recommend(userid=user_id, N=k)
+    user_index = matrix_info.user_id2index[user_id]
+    user_items = matrix_info.matrix.T.tocsr()[user_index]
+    recommend_item_indexes, _ = model.recommend(
+        userid=user_index, user_items=user_items, N=k
+    )
     unique_item_ids = list(matrix_info.item_id2index.keys())
     recommend_ids = []
     for recommend_item_index in recommend_item_indexes:
