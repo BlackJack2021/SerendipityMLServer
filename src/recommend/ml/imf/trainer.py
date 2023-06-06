@@ -22,7 +22,7 @@ class Trainer:
         random_state: int = 1,
         regularization: float = 0.1,
         k: int = 10,
-        end_date: datetime = datetime(2023, 5, 31),
+        end_date: Optional[datetime] = datetime(2023, 5, 31),
     ):
         """
         モデルの学習に用いるクラスを提供
@@ -63,9 +63,9 @@ class Trainer:
     @staticmethod
     def preprocess(
         raw_df: pd.DataFrame,
-        minimum_num_per_user: int,
-        valid_ratio: float,
-        end_date: datetime,
+        minimum_num_per_user: Optional[int],
+        valid_ratio: Optional[float],
+        end_date: Optional[datetime],
     ):
         """前処理パート
 
