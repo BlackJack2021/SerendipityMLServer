@@ -1,32 +1,31 @@
-import pandas as pd
-from typing import List, Optional, Dict
-import implicit
-from scipy.sparse import lil_matrix
-from collections import defaultdict
+from typing import Optional, List, Dict
 from datetime import datetime
-import pickle
+import pandas as pd
+import gensim
 
-from src.recommend.ml.imf.schemas import raw_data_for_train_schema
-from src.recommend.ml.utils.dataclass import Dataset, MatrixInfo, RecommendResult
+from src.recommend.ml.utils.dataclass import Dataset, RecommendResult
 from src.recommend.ml.utils.metric_calcurator import MetricCalculator
+from src.recommend.ml.item2vec.schemas import raw_data_for_train_schema
 
 
 class Trainer:
+    """Word2Vec をユーザーの行動履歴情報に適用し、各企業の性質の分散表現を取得"""
+
     def __init__(
         self,
         minimum_num_per_user: Optional[int] = 3,
         valid_ratio: Optional[float] = 1 / 3,
-        alpha: float = 1.0,
-        factors: int = 30,
-        n_epochs: int = 50,
-        random_state: int = 1,
-        regularization: float = 0.1,
+        factors: int = 100,
+        n_epochs: int = 30,
+        window: int = 2,
+        use_skip_gram: int = 1,
+        use_hierarchial_softmax: int = 0,
+        min_count: int = 1,
         k: int = 10,
         end_date: Optional[datetime] = datetime(2023, 5, 31),
     ):
         """
-        モデルの学習に用いるクラスを提供
-
+        モデルのハイパーパラメータなど、学習及び検証に必要なパラメータを渡す
         Argument:
             minimum_num_per_user: Optional[int] = 3
                 1ユーザー当たり最低何本の企業閲覧が存在することを前提とするか
@@ -34,31 +33,37 @@ class Trainer:
             valid_ratio: Optional[float] = 1/3
                 検証データの比率
                 プロダクション用のモデルを構築する際にはここを None にする
-            alpha: float = 1.0
-                信頼度を算出するのに用いる比例定数. 詳しくは description.md を参照すること
-            factors: int = 10
-                行列因子分解に用いる因子数
-            n_epochs: int = 50
-                学習におけるパラメータの更新回数
-            random_state: int = 1
-                implicit.alt.AlternatingLeastSquare の乱数シードの設定
+            factors: int = 100
+                単語ベクトルの次元数
+            n_epochs: int = 30
+                学習における重みパラメータの更新回数
+            window: int = 2
+                ある単語の周辺語を何単語までとするか
+            use_skip_gram: int = 1
+                ニューラルネットワークモデルとして SkipGram を使用するかどうか
+            use_hierarchial_softmax: int = 0
+                階層的ソフトマックス法を使用するかどうか。 use_skip_gram=1 ならこちらは0にすべき。
+            min_count: int = 1
+                企業数の出現回数の閾値。今回はせいぜい5000事業者ぐらいなので
+                初期値ではフィルタリングは敢えて行わないものとする。
             k: int = 10
                 Precision@K や Recall@K における K
-            regularization: float = 0.1
-                正則化項の重みパラメータ
-            end_date: datetime = datetime(2023, 5, 31)
-                利用するデータの最終日情報
+            end_date: Optional[datetime] = datetime(2023, 5, 31)
+                データをそろえるため、使用するデータの最新日付を指定する
         """
         self.minimum_num_per_user = minimum_num_per_user
         self.valid_ratio = valid_ratio
-        self.alpha = alpha
         self.factors = factors
         self.n_epochs = n_epochs
-        self.random_state = random_state
+        self.window = window
+        self.use_skip_gram = use_skip_gram
+        self.use_hierarchial_softmax = use_hierarchial_softmax
+        self.min_count = min_count
         self.k = k
-        self.regularization = regularization
         self.end_date = end_date
-        self.model: Optional[implicit.als.AlternatingLeastSquares] = None
+
+        # モデルを格納する
+        self.model: Optional[gensim.models.word2vec.Word2Vec] = None
 
     @staticmethod
     def preprocess(
@@ -106,58 +111,50 @@ class Trainer:
             train_df=train_df, valid_df=valid_df, valid_user2items=valid_user2items
         )
 
-    @staticmethod
-    def get_matrix_info(
-        train_df: pd.DataFrame,
-        alpha: float,
-    ):
-        """学習データを user × company の行列形式で持つ際の諸情報を取得"""
-        unique_user_ids = sorted(train_df["user_id"].unique())
-        unique_item_ids = sorted(train_df["edinet_code"].unique())
-        user_id2index = dict(zip(unique_user_ids, range(len(unique_user_ids))))
-        item_id2index = dict(zip(unique_item_ids, range(len(unique_item_ids))))
-        matrix = lil_matrix((len(unique_item_ids), len(unique_user_ids)))
-        for _, row in train_df.iterrows():
-            user_id = row["user_id"]
-            item_id = row["edinet_code"]
-            user_index = user_id2index[user_id]
-            item_index = item_id2index[item_id]
-            matrix[item_index, user_index] = 1.0 * alpha
-        return MatrixInfo(
-            user_id2index=user_id2index, item_id2index=item_id2index, matrix=matrix
-        )
-
     def fit(
         self,
-        matrix: lil_matrix,
+        train_df: pd.DataFrame,
         factors: int,
         n_epochs: int,
-        random_state: int,
-        regularization: float,
+        window: int,
+        use_skip_gram: int,
+        use_hierarchial_softmax: int,
+        min_count: int,
     ):
-        """モデルの学習を実施"""
-        self.model = implicit.als.AlternatingLeastSquares(
-            factors=factors,
-            iterations=n_epochs,
-            calculate_training_loss=True,
-            random_state=random_state,
-            regularization=regularization,
-        )
-        self.model.fit(matrix.T.tocsr())
+        """学習データに基づいてモデルの学習を実施"""
+        # まずは train_df から各ユーザーの閲覧企業のリストを作成
+        item2vec_data: List[str] = []
+        for user_id, user_df in train_df.groupby("user_id"):
+            item2vec_data.append(
+                user_df.sort_values("datetime")["edinet_code"].tolist()
+            )
 
-    def predict(self, matrix_info: MatrixInfo, k: int) -> RecommendResult:
+        # モデルの学習を実施
+        model = gensim.models.word2vec.Word2Vec(
+            item2vec_data,
+            vector_size=factors,
+            window=window,
+            sg=use_skip_gram,
+            hs=use_hierarchial_softmax,
+            epochs=n_epochs,
+            min_count=min_count,
+            workers=1,  # word2vec の出力を determinisitic にするために必要
+        )
+        self.model = model
+
+    def predict(self, train_df: pd.DataFrame, k: int) -> RecommendResult:
         """学習したモデルに基づいて k 個商品をレコメンドする"""
-        recommendations = self.model.recommend_all(matrix_info.matrix.T.tocsr())
-        pred_user2items = defaultdict(list)
-        unique_item_ids = list(matrix_info.item_id2index.keys())
-        for user_id, user_index in matrix_info.user_id2index.items():
-            item_indexes = recommendations[user_index, :]
-            # 推薦個数が k 個になるまで推薦を続ける
-            for item_index in item_indexes:
-                item_id = unique_item_ids[item_index]
-                pred_user2items[user_id].append(item_id)
-                if len(pred_user2items[user_id]) == k:
-                    break
+        pred_user2items = dict()
+        for user_id, user_df in train_df.groupby("user_id"):
+            input_data = []
+            for item_id in user_df.sort_values("datetime")["edinet_code"].tolist():
+                if item_id in self.model.wv.key_to_index:
+                    input_data.append(item_id)
+                if len(input_data) == 0:
+                    pred_user2items[user_id] = []
+                    continue
+            recommended_items = self.model.wv.most_similar(input_data, topn=k)
+            pred_user2items[user_id] = [d[0] for d in recommended_items]
         return RecommendResult(pred_user2items)
 
     def evaluate(
@@ -183,15 +180,16 @@ class Trainer:
             valid_ratio=self.valid_ratio,
             end_date=self.end_date,
         )
-        matrix_info = self.get_matrix_info(train_df=dataset.train_df, alpha=self.alpha)
         self.fit(
-            matrix=matrix_info.matrix,
+            train_df=dataset.train_df,
             factors=self.factors,
             n_epochs=self.n_epochs,
-            random_state=self.random_state,
-            regularization=self.regularization,
+            window=self.window,
+            use_skip_gram=self.use_skip_gram,
+            use_hierarchial_softmax=self.use_hierarchial_softmax,
+            min_count=self.min_count,
         )
-        recommend_result = self.predict(matrix_info=matrix_info, k=self.k)
+        recommend_result = self.predict(train_df=dataset.train_df, k=self.k)
         metrics = self.evaluate(
             valid_user2items=dataset.valid_user2items,
             pred_user2items=recommend_result.pred_user2items,
@@ -202,22 +200,21 @@ class Trainer:
     def train_and_save_model_for_production(
         self,
         raw_df: pd.DataFrame,
-        matrix_info_path: str = "./src/recommend/ml/imf/production_model/matrix_info.pkl",
-        model_path: str = "./src/recommend/ml/imf/production_model/imf_model",
+        model_path: str = "./src/recommend/ml/item2vec/production_model/item2vec.model",
     ):
         """プロダクション用のモデルの学習及び保存を実施"""
         df = raw_data_for_train_schema.validate(raw_df)
-        matrix_info = self.get_matrix_info(train_df=df, alpha=self.alpha)
+        # 利用できる全てのデータを用いて学習を実施
         self.fit(
-            matrix=matrix_info.matrix,
+            train_df=df,
             factors=self.factors,
             n_epochs=self.n_epochs,
-            random_state=self.random_state,
-            regularization=self.regularization,
+            window=self.window,
+            use_skip_gram=self.use_skip_gram,
+            use_hierarchial_softmax=self.use_hierarchial_softmax,
+            min_count=self.min_count,
         )
         # matrix_info と model の保存を実施
-        with open(matrix_info_path, "wb") as f:
-            pickle.dump(matrix_info, f)
         self.model.save(model_path)
 
         print("モデルの学習・保存が完了しました。")
