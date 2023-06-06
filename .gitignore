@@ -330,6 +330,7 @@ db_config.py
 # モデルなど
 *.pkl
 *.npz
+item2vec.model
 # mlflow 用の実験パラメータ
 src/recommend/ml/mlflow/config.py
 # mlflow の実験結果ログ
