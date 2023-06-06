@@ -1,4 +1,6 @@
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.engine import Result
 from src.db import sync_session
 import pandas as pd
 from src.recommend.ml.imf.schemas import raw_data_for_train_schema
@@ -15,3 +17,11 @@ def fetch_data_for_train() -> pd.DataFrame:
     raw_df = pd.DataFrame(data.all())
     checked_df = raw_data_for_train_schema.validate(raw_df)
     return checked_df
+
+
+async def fetch_data_for_predict(db: AsyncSession, user_id: str) -> pd.DataFrame:
+    with open("./src/recommend/ml/item2vec/sqls/fetch_data_for_predict.sql", "r") as f:
+        query = f.read()
+    result: Result = await db.execute(text(query), {"user_id": user_id})
+    raw_df = pd.DataFrame(result.all())
+    return raw_df
