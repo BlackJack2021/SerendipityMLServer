@@ -2,8 +2,8 @@ import sqlite3
 import os
 import mlflow
 
-from src.recommend.ml.item2vec.trainer import Trainer as Item2VecTrainer
-from src.recommend.ml.item2vec.fetcher import fetch_data_for_train
+from src.recommend.ml.imf.trainer import Trainer
+from src.recommend.ml.imf.fetcher import fetch_data_for_train
 from src.recommend.ml.mlflow.config import EXPERIMENT_NAME, parameter
 
 DB_PATH = "./src/recommend/ml/mlflow/sqlite/mlruns.db"
@@ -26,7 +26,7 @@ else:
 
 with mlflow.start_run(experiment_id=experiment_id) as run:
     mlflow.log_params(parameter)
-    trainer = Item2VecTrainer(**parameter)
+    trainer = Trainer(**parameter)
     raw_df = fetch_data_for_train()
     metrics = trainer.execute_experiment(raw_df=raw_df)
     mlflow.log_metric("precision_at_k", metrics.precision_at_k)
