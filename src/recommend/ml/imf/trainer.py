@@ -83,7 +83,7 @@ class Trainer:
         trains: List[pd.DataFrame] = []
         valids: List[pd.DataFrame] = []
         for _, user_df in df.groupby("user_id"):
-            if len(user_df) > minimum_num_per_user:
+            if len(user_df) < minimum_num_per_user:
                 continue
             valid_num = int(len(user_df) * valid_ratio)
             uid_valid_df = user_df.sort_values(by="datetime", ascending=False).iloc[

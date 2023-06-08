@@ -1,7 +1,7 @@
 parameter = {
     "minimum_num_per_user": None,
     "valid_ratio": None,
-    "factors": 100,
+    "factors": 50,
     "n_epochs": 30,
     "window": 5,
     "use_skip_gram": 1,

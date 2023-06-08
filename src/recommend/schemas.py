@@ -8,3 +8,7 @@ class RecommendedByIMF(BaseModel):
 
 class RecommendedByItem2Vec(BaseModel):
     edinet_codes: List[str]
+
+
+class RecommendedByAssociationRule(BaseModel):
+    edinet_codes: List[str]

@@ -1,69 +1,51 @@
+import pandas as pd
 from typing import Optional, List, Dict
 from datetime import datetime
-import pandas as pd
-import gensim
+from mlxtend.frequent_patterns import apriori, association_rules
+from collections import defaultdict, Counter
+import pickle
 
+from src.recommend.ml.imf.schemas import raw_data_for_train_schema
 from src.recommend.ml.utils.dataclass import Dataset, RecommendResult
 from src.recommend.ml.utils.metric_calcurator import MetricCalculator
-from src.recommend.ml.item2vec.schemas import raw_data_for_train_schema
 
 
 class Trainer:
-    """Word2Vec をユーザーの行動履歴情報に適用し、各企業の性質の分散表現を取得"""
-
     def __init__(
         self,
-        minimum_num_per_user: Optional[int] = 3,
-        valid_ratio: Optional[float] = 1 / 3,
-        factors: int = 100,
-        n_epochs: int = 30,
-        window: int = 2,
-        use_skip_gram: int = 1,
-        use_hierarchial_softmax: int = 0,
-        min_count: int = 1,
+        minimum_num_per_user: Optional[int] = 5,
+        valid_ratio: Optional[float] = 1 / 5,
+        min_support: float = 0.011,
+        metric: str = "lift",
+        min_threshold: float = 1.0,
         k: int = 10,
         end_date: Optional[datetime] = datetime(2023, 5, 31),
     ):
         """
-        モデルのハイパーパラメータなど、学習及び検証に必要なパラメータを渡す
         Argument:
-            minimum_num_per_user: Optional[int] = 3
+            minimum_num_per_user: Optional[int] = 10
                 1ユーザー当たり最低何本の企業閲覧が存在することを前提とするか
                 プロダクション用のモデルを構築する際にはここを None にする
             valid_ratio: Optional[float] = 1/3
                 検証データの比率
                 プロダクション用のモデルを構築する際にはここを None にする
-            factors: int = 100
-                単語ベクトルの次元数
-            n_epochs: int = 30
-                学習における重みパラメータの更新回数
-            window: int = 2
-                ある単語の周辺語を何単語までとするか
-            use_skip_gram: int = 1
-                ニューラルネットワークモデルとして SkipGram を使用するかどうか
-            use_hierarchial_softmax: int = 0
-                階層的ソフトマックス法を使用するかどうか。 use_skip_gram=1 ならこちらは0にすべき。
-            min_count: int = 1
-                企業数の出現回数の閾値。今回はせいぜい5000事業者ぐらいなので
-                初期値ではフィルタリングは敢えて行わないものとする。
+            min_support: float = 0.011
+                支持度の最小値を指定
+            metric: str = 'lift'
+                アソシエーションルールの並び替え指標を決定
             k: int = 10
                 Precision@K や Recall@K における K
-            end_date: Optional[datetime] = datetime(2023, 5, 31)
-                データをそろえるため、使用するデータの最新日付を指定する
+            end_date: datetime = datetime(2023, 5, 31)
+                利用するデータの最終日情報
         """
         self.minimum_num_per_user = minimum_num_per_user
         self.valid_ratio = valid_ratio
-        self.factors = factors
-        self.n_epochs = n_epochs
-        self.window = window
-        self.use_skip_gram = use_skip_gram
-        self.use_hierarchial_softmax = use_hierarchial_softmax
-        self.min_count = min_count
+        self.min_support = min_support
+        self.metric = metric
+        self.min_threshold = min_threshold
         self.k = k
         self.end_date = end_date
-
-        # モデルを格納する
-        self.model: Optional[gensim.models.word2vec.Word2Vec] = None
+        self.model: Optional[pd.DataFrame] = None
 
     @staticmethod
     def preprocess(
@@ -88,6 +70,7 @@ class Trainer:
         trains: List[pd.DataFrame] = []
         valids: List[pd.DataFrame] = []
         for _, user_df in df.groupby("user_id"):
+            user_df = user_df.drop_duplicates(subset=["edinet_code"])
             if len(user_df) < minimum_num_per_user:
                 continue
             valid_num = int(len(user_df) * valid_ratio)
@@ -114,47 +97,61 @@ class Trainer:
     def fit(
         self,
         train_df: pd.DataFrame,
-        factors: int,
-        n_epochs: int,
-        window: int,
-        use_skip_gram: int,
-        use_hierarchial_softmax: int,
-        min_count: int,
+        min_support: float,
+        metric: str,
+        min_threshold: float,
     ):
-        """学習データに基づいてモデルの学習を実施"""
-        # まずは train_df から各ユーザーの閲覧企業のリストを作成
-        item2vec_data: List[str] = []
-        for user_id, user_df in train_df.groupby("user_id"):
-            item2vec_data.append(
-                user_df.sort_values("datetime")["edinet_code"].tolist()
-            )
-
-        # モデルの学習を実施
-        model = gensim.models.word2vec.Word2Vec(
-            item2vec_data,
-            vector_size=factors,
-            window=window,
-            sg=use_skip_gram,
-            hs=use_hierarchial_softmax,
-            epochs=n_epochs,
-            min_count=min_count,
-            workers=1,  # word2vec の出力を determinisitic にするために必要
+        """学習データを使ってアソシエーションルールを計算する"""
+        # まずはユーザー×アイテムのマトリックスを作成する
+        user_item_matrix = train_df.drop_duplicates(["user_id", "edinet_code"]).pivot(
+            index="user_id", columns="edinet_code", values="filer_name"
         )
-        self.model = model
+        user_item_matrix[user_item_matrix.isnull()] = False
+        user_item_matrix[user_item_matrix != False] = True
+        for col in user_item_matrix.columns.tolist():
+            user_item_matrix[col] = user_item_matrix[col].astype(bool)
+        # 支持度で絞り込みを行い、アソシエーションルールを計算
+        print(user_item_matrix.shape)
+        freq_items = apriori(
+            user_item_matrix, min_support=min_support, use_colnames=True
+        )
+        print(freq_items.shape)
+        rules = association_rules(
+            freq_items, metric=metric, min_threshold=min_threshold
+        )
+        self.model = rules
 
     def predict(self, train_df: pd.DataFrame, k: int) -> RecommendResult:
-        """学習したモデルに基づいて k 個商品をレコメンドする"""
-        pred_user2items = dict()
+        user_evaluated_items = (
+            train_df.groupby("user_id")
+            .agg({"edinet_code": list})["edinet_code"]
+            .to_dict()
+        )
+        pred_user2items = defaultdict(list)
         for user_id, user_df in train_df.groupby("user_id"):
-            input_data = []
-            for item_id in user_df.sort_values("datetime")["edinet_code"].tolist():
-                if item_id in self.model.wv.key_to_index:
-                    input_data.append(item_id)
-                if len(input_data) == 0:
-                    pred_user2items[user_id] = []
-                    continue
-            recommended_items = self.model.wv.most_similar(input_data, topn=k)
-            pred_user2items[user_id] = [d[0] for d in recommended_items]
+            # ユーザーが直近評価した5つの企業を取得
+            latest_evaluated_items = user_df.sort_values("datetime")[
+                "edinet_code"
+            ].tolist()[-5:]
+            # それらの企業が条件部に1本でも含まれているアソシエーションルールを抽出
+            matched_flags = self.model["antecedents"].apply(
+                lambda x: len(set(latest_evaluated_items) & set(x)) >= 1
+            )
+            # アソシエーションルールの帰結部をアイテムリストに格納。
+            # その後登場頻度順に並び替え、まだユーザーが評価していないものがあればそれを追加
+            consequent_items = []
+            for i, row in (
+                self.model[matched_flags]
+                .sort_values("lift", ascending=False)
+                .iterrows()
+            ):
+                consequent_items.extend(row["consequents"])
+            counter = Counter(consequent_items)
+            for edinet_code, edinet_code_count in counter.most_common():
+                if edinet_code not in user_evaluated_items[user_id]:
+                    pred_user2items[user_id].append(edinet_code)
+                if len(pred_user2items[user_id]) == k:
+                    break
         return RecommendResult(pred_user2items)
 
     def evaluate(
@@ -172,7 +169,6 @@ class Trainer:
         return metrics
 
     def execute_experiment(self, raw_df: pd.DataFrame):
-        """raw_df を入力とし、学習から評価まで実施"""
         df = raw_data_for_train_schema.validate(raw_df)
         dataset = self.preprocess(
             raw_df=df,
@@ -182,12 +178,9 @@ class Trainer:
         )
         self.fit(
             train_df=dataset.train_df,
-            factors=self.factors,
-            n_epochs=self.n_epochs,
-            window=self.window,
-            use_skip_gram=self.use_skip_gram,
-            use_hierarchial_softmax=self.use_hierarchial_softmax,
-            min_count=self.min_count,
+            min_support=self.min_support,
+            metric=self.metric,
+            min_threshold=self.min_threshold,
         )
         recommend_result = self.predict(train_df=dataset.train_df, k=self.k)
         metrics = self.evaluate(
@@ -200,21 +193,22 @@ class Trainer:
     def train_and_save_model_for_production(
         self,
         raw_df: pd.DataFrame,
-        model_path: str = "./src/recommend/ml/item2vec/production_model/item2vec.model",
+        model_path: str = "./src/recommend/ml/association_rule/production_model/association_rule.pkl",
     ):
         """プロダクション用のモデルの学習及び保存を実施"""
+        train_dfs = []
         df = raw_data_for_train_schema.validate(raw_df)
-        # 利用できる全てのデータを用いて学習を実施
+        for user_id, user_df in df.groupby("user_id"):
+            user_df = user_df.drop_duplicates(["edinet_code"])
+            if len(user_df) < self.minimum_num_per_user:
+                continue
+            train_dfs.append(user_df)
+        train_df = pd.concat(train_dfs)
         self.fit(
-            train_df=df,
-            factors=self.factors,
-            n_epochs=self.n_epochs,
-            window=self.window,
-            use_skip_gram=self.use_skip_gram,
-            use_hierarchial_softmax=self.use_hierarchial_softmax,
-            min_count=self.min_count,
+            train_df=train_df,
+            min_support=self.min_support,
+            metric=self.metric,
+            min_threshold=self.min_threshold,
         )
-        # matrix_info と model の保存を実施
-        self.model.save(model_path)
-
-        print("モデルの学習・保存が完了しました。")
+        with open(model_path, "wb") as f:
+            pickle.dump(self.model, f)

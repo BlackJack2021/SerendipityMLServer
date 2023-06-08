@@ -21,6 +21,8 @@ pandera = "0.14"
 multimethod = "^1.9.1"
 mlflow = "^2.3.2"
 gensim = "^4.3.1"
+notebook = "^6.5.4"
+mlxtend = "^0.22.0"
 
 
 [build-system]
