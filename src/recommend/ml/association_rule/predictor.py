@@ -17,24 +17,32 @@ async def predict_for_user(
     with open(model_path, "rb") as f:
         association_rule: pd.DataFrame = pickle.load(f)
     user_evaluated_items = raw_user_df["edinet_code"].unique().tolist()
-    latest_evaluated_items = raw_user_df.sort_values("datetime")[
+    latest_evaluated_items = raw_user_df.sort_values("datetime", ascending=False)[
         "edinet_code"
-    ].tolist()[-5:]
-    # それらの企業が条件部に一本でも含まれているアソシエーションルールを抽出
-    matched_flags = association_rule["antecedents"].apply(
-        lambda x: len(set(latest_evaluated_items) & set(x)) >= 1
-    )
-    # アソシエーションルールの帰結部をアイテムリストに格納
-    consequent_items = []
-    for i, row in (
-        association_rule[matched_flags].sort_values("lift", ascending=False).iterrows()
-    ):
-        consequent_items.extend(row["consequents"])
-    counter = Counter(consequent_items)
-    recommends = []
-    for edinet_code, edinet_code_count in counter.most_common():
-        if edinet_code not in user_evaluated_items:
-            recommends.append(edinet_code)
+    ].tolist()
+
+    # 新しい閲覧企業に対し、順次レコメンドを実装していく
+    recommends: List[str] = []
+    for item in latest_evaluated_items:
+        # 当該企業が条件部に一本でも含まれているアソシエーションルールを抽出
+        matched_flags = association_rule["antecedents"].apply(
+            lambda x: len(set([item]) & set(x)) >= 1
+        )
+        # アソシエーションルールの帰結部をアイテムリストに格納
+        consequent_items = []
+        for i, row in (
+            association_rule[matched_flags]
+            .sort_values("lift", ascending=False)
+            .iterrows()
+        ):
+            print(row)
+            consequent_items.extend(row["consequents"])
+        counter = Counter(consequent_items)
+        for edinet_code, edinet_code_count in counter.most_common():
+            if edinet_code not in user_evaluated_items:
+                recommends.append(edinet_code)
+            if len(recommends) == k:
+                break
         if len(recommends) == k:
             break
     return recommends
