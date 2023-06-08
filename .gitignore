@@ -335,3 +335,5 @@ item2vec.model
 src/recommend/ml/mlflow/config.py
 # mlflow の実験結果ログ
 mlruns.db
+# jupyternotebook は git 管理しない
+*.ipynb
